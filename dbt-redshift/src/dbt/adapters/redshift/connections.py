@@ -282,7 +282,9 @@ def get_connection_method(
         redshift_ssl_config: Dict[str, Any] = RedshiftSSLConfig.parse(
             credentials.sslmode
         ).to_dict()
-        return {
+
+        # Base connection parameters
+        base_kwargs = {
             "host": credentials.host,
             "port": int(credentials.port) if credentials.port else 5439,
             "database": credentials.database,
@@ -293,6 +295,18 @@ def get_connection_method(
             "is_serverless": is_serverless(credentials),
             **redshift_ssl_config,
         }
+
+        # Add TCP keepalive parameters if enabled
+        if credentials.tcp_keepalive:
+            base_kwargs["tcp_keepalive"] = True
+            if credentials.tcp_keepalive_idle is not None:
+                base_kwargs["tcp_keepalive_idle"] = credentials.tcp_keepalive_idle
+            if credentials.tcp_keepalive_interval is not None:
+                base_kwargs["tcp_keepalive_interval"] = credentials.tcp_keepalive_interval
+            if credentials.tcp_keepalive_count is not None:
+                base_kwargs["tcp_keepalive_count"] = credentials.tcp_keepalive_count
+
+        return base_kwargs
 
     def __iam_kwargs(credentials) -> Dict[str, Any]:
 
