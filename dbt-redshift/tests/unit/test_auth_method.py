@@ -906,7 +906,7 @@ class TestSSOMethod(AuthMethod):
         # Reset global token
         import dbt.adapters.redshift.connections
 
-        dbt.adapters.redshift.connections.IDP_TOKEN = ""
+        dbt.adapters.redshift.connections.IDP_TOKEN = None
 
         self.config.credentials = self.config.credentials.replace(
             method="sso",
@@ -985,7 +985,7 @@ class TestSSOMethod(AuthMethod):
         import dbt.adapters.redshift.connections
 
         # Start with empty token
-        dbt.adapters.redshift.connections.IDP_TOKEN = ""
+        dbt.adapters.redshift.connections.IDP_TOKEN = None
 
         self.config.credentials = self.config.credentials.replace(
             method="sso",
@@ -1043,7 +1043,7 @@ class TestSSOMethod(AuthMethod):
         import dbt.adapters.redshift.connections
 
         # Reset global token
-        dbt.adapters.redshift.connections.IDP_TOKEN = ""
+        dbt.adapters.redshift.connections.IDP_TOKEN = None
 
         self.config.credentials = self.config.credentials.replace(
             method="sso",
