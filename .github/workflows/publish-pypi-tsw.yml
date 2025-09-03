@@ -24,13 +24,12 @@ jobs:
       - name: Install pypa/build
         run: python3 -m pip install build --user
       - name: Build a binary wheel and a source tarball
-        run: cd ${{ inputs.package }} && \
-             python3 -m build
+        run: python3 -m build ${{ inputs.package }}/
       - name: Store the distribution packages
         uses: actions/upload-artifact@v4
         with:
           name: python-package-distributions
-          path: dist/
+          path: ${{ inputs.package }}/dist/
 
   publish:
     name: Publish to PyPI 🚀

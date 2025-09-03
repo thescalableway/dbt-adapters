@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 dynamic = ["version"]
 name = "dbt-postgres-tsw"
-description = "The set of adapter protocols and base functionality that supports integration with dbt-core"
+description = "The set of adapter protocols and base functionality that supports integration with dbt-core, forked from dbt-labs/dbt-adapters"
 readme = "README.md"
 keywords = ["dbt", "adapter", "adapters", "database", "elt", "dbt-core", "dbt Core", "dbt Cloud", "dbt Labs", "postgres"]
 requires-python = ">=3.9.0"
