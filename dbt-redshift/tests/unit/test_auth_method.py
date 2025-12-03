@@ -16,6 +16,7 @@ from tests.unit.utils import config_from_parts_or_dicts, inject_adapter
 
 
 DEFAULT_SSL_CONFIG = RedshiftSSLConfig().to_dict()
+DEFAULT_TCP_KEEPALIVE_CONFIG = {"tcp_keepalive": True}
 
 
 class AuthMethod(TestCase):
@@ -61,9 +62,9 @@ class AuthMethod(TestCase):
 class TestInvalidMethod(AuthMethod):
     def test_invalid_auth_method(self):
         # we have to set method this way, otherwise it won't validate
-        self.config.credentials.method = "badmethod"
+        self.config.credentials.method = "badmethod"  # type: ignore
         with self.assertRaises(FailedToConnectError) as context:
-            connect_method_factory = get_connection_method(self.config.credentials)
+            connect_method_factory = get_connection_method(self.config.credentials)  # type: ignore
             connect_method_factory.get_connect_method()
         self.assertTrue("badmethod" in context.exception.msg)
 
@@ -144,6 +145,7 @@ class TestDatabaseMethod(AuthMethod):
             region=None,
             is_serverless=False,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     @mock.patch("redshift_connector.connect", MagicMock())
@@ -164,6 +166,7 @@ class TestDatabaseMethod(AuthMethod):
             timeout=None,
             is_serverless=False,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     def test_database_verification_is_case_insensitive(self):
@@ -258,6 +261,7 @@ class TestIAMUserMethod(AuthMethod):
             serverless_work_group=None,
             serverless_acct_id=None,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     @mock.patch("redshift_connector.connect", MagicMock())
@@ -289,6 +293,7 @@ class TestIAMUserMethod(AuthMethod):
             serverless_work_group=None,
             serverless_acct_id=None,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     @mock.patch("redshift_connector.connect", MagicMock())
@@ -321,6 +326,7 @@ class TestIAMUserMethod(AuthMethod):
             serverless_work_group=None,
             serverless_acct_id=None,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     @mock.patch("redshift_connector.connect", MagicMock())
@@ -357,6 +363,7 @@ class TestIAMUserMethod(AuthMethod):
             serverless_work_group="my_workgroup",
             serverless_acct_id="0123456789",
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
 
@@ -389,6 +396,7 @@ class TestIAMUserMethodServerless(AuthMethod):
             serverless_work_group=None,
             serverless_acct_id=None,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     @mock.patch("redshift_connector.connect", MagicMock())
@@ -420,6 +428,7 @@ class TestIAMUserMethodServerless(AuthMethod):
             serverless_work_group=None,
             serverless_acct_id=None,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     @mock.patch("redshift_connector.connect", MagicMock())
@@ -451,6 +460,7 @@ class TestIAMUserMethodServerless(AuthMethod):
             serverless_work_group=None,
             serverless_acct_id=None,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     @mock.patch("redshift_connector.connect", MagicMock())
@@ -478,6 +488,7 @@ class TestIAMUserMethodServerless(AuthMethod):
                 port=5439,
                 timeout=None,
                 **DEFAULT_SSL_CONFIG,
+                **DEFAULT_TCP_KEEPALIVE_CONFIG,
             )
         self.assertTrue("'host' must be provided" in context.exception.msg)
 
@@ -518,6 +529,7 @@ class TestIAMRoleMethod(AuthMethod):
             serverless_work_group=None,
             serverless_acct_id=None,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     @mock.patch("redshift_connector.connect", MagicMock())
@@ -548,6 +560,7 @@ class TestIAMRoleMethod(AuthMethod):
             serverless_work_group=None,
             serverless_acct_id=None,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
 
@@ -582,6 +595,7 @@ class TestIAMRoleMethodServerless(AuthMethod):
             serverless_work_group=None,
             serverless_acct_id=None,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     @mock.patch("redshift_connector.connect", MagicMock())
@@ -613,6 +627,7 @@ class TestIAMRoleMethodServerless(AuthMethod):
             serverless_work_group=None,
             serverless_acct_id=None,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     @mock.patch("redshift_connector.connect", MagicMock())
@@ -645,6 +660,7 @@ class TestIAMRoleMethodServerless(AuthMethod):
             serverless_work_group=None,
             serverless_acct_id=None,
             **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     @mock.patch("redshift_connector.connect", MagicMock())
@@ -676,6 +692,7 @@ class TestIAMRoleMethodServerless(AuthMethod):
                 serverless_work_group=None,
                 serverless_acct_id=None,
                 **DEFAULT_SSL_CONFIG,
+                **DEFAULT_TCP_KEEPALIVE_CONFIG,
             )
         self.assertTrue("'host' must be provided" in context.exception.msg)
 
@@ -716,6 +733,7 @@ class TestIAMIdcBrowser(AuthMethod):
             idc_region="us-east-1",
             issuer_url="https://identitycenter.amazonaws.com/ssoins-randomchars",
             listen_port=1111,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     @mock.patch("redshift_connector.connect", MagicMock())
@@ -750,6 +768,7 @@ class TestIAMIdcBrowser(AuthMethod):
             idc_client_display_name="Amazon Redshift driver",
             idc_region="us-east-1",
             issuer_url="https://identitycenter.amazonaws.com/ssoins-randomchars",
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
         )
 
     def test_invalid_adapter_missing_fields(self):
@@ -779,6 +798,7 @@ class TestIAMIdcBrowser(AuthMethod):
                 listen_port=1111,
                 idp_response_timeout=60,
                 idc_client_display_name="my display",
+                **DEFAULT_TCP_KEEPALIVE_CONFIG,
             )
 
         assert (
@@ -895,3 +915,225 @@ class TestIAMIdcToken(AuthMethod):
             connection = self.adapter.acquire_connection("dummy")
             connection.handle
         assert "Missing required key in token_endpoint: 'type'" in context.exception.msg
+
+
+class TestSSOMethod(AuthMethod):
+    @mock.patch("redshift_connector.connect", MagicMock())
+    def test_sso_method_browser_auth(self):
+        """Test SSO method with browser authentication (first time or expired token)"""
+        # Reset global token
+        import dbt.adapters.redshift.connections
+
+        dbt.adapters.redshift.connections.IDP_TOKEN = None
+
+        self.config.credentials = self.config.credentials.replace(
+            method="sso",
+            scope="https://redshift.amazonaws.com/dbuser",
+            client_id="test-client-id",
+            idp_tenant="test-tenant-id",
+            sso_cache=False,
+            host="thishostshouldnotexist.test.us-east-1",
+        )
+        connection = self.adapter.acquire_connection("dummy")
+        connection.handle
+        redshift_connector.connect.assert_called_once_with(
+            host="thishostshouldnotexist.test.us-east-1",
+            port=5439,
+            database="redshift",
+            region=None,
+            auto_create=False,
+            db_groups=[],
+            timeout=None,
+            is_serverless=False,
+            iam=False,
+            db_user="",
+            scope="https://redshift.amazonaws.com/dbuser",
+            client_id="test-client-id",
+            idp_tenant="test-tenant-id",
+            listen_port=7890,
+            credentials_provider="redshift_connector.plugin.BrowserAzureOAuth2CredentialsProvider",
+            user="",
+            password="",
+            idp_response_timeout=50,
+            **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
+        )
+
+    @mock.patch("redshift_connector.connect", MagicMock())
+    def test_sso_method_cached_token(self):
+        """Test SSO method with cached token"""
+        import dbt.adapters.redshift.connections
+
+        # Set a valid token
+        dbt.adapters.redshift.connections.IDP_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjIwMDAwMDAwMDB9.signature"
+
+        self.config.credentials = self.config.credentials.replace(
+            method="sso",
+            scope="https://redshift.amazonaws.com/dbuser",
+            client_id="test-client-id",
+            idp_tenant="test-tenant-id",
+            host="thishostshouldnotexist.test.us-east-1",
+        )
+
+        mock_connection = MagicMock()
+        mock_connection.web_identity_token = None
+        redshift_connector.connect.return_value = mock_connection
+
+        connection = self.adapter.acquire_connection("dummy")
+        connection.handle
+        redshift_connector.connect.assert_called_once_with(
+            host="thishostshouldnotexist.test.us-east-1",
+            port=5439,
+            database="redshift",
+            region=None,
+            auto_create=False,
+            db_groups=[],
+            timeout=None,
+            is_serverless=False,
+            iam=False,
+            credentials_provider="redshift_connector.plugin.BasicJwtCredentialsProvider",
+            password="",
+            web_identity_token=dbt.adapters.redshift.connections.IDP_TOKEN,
+            **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
+        )
+
+    @mock.patch("redshift_connector.connect", MagicMock())
+    def test_sso_method_token_refresh(self):
+        """Test SSO method token refresh from connection"""
+        import dbt.adapters.redshift.connections
+
+        # Start with empty token
+        dbt.adapters.redshift.connections.IDP_TOKEN = None
+
+        self.config.credentials = self.config.credentials.replace(
+            method="sso",
+            scope="https://redshift.amazonaws.com/dbuser",
+            client_id="test-client-id",
+            idp_tenant="test-tenant-id",
+            host="thishostshouldnotexist.test.us-east-1",
+        )
+
+        mock_connection = MagicMock()
+        mock_connection.web_identity_token = "new_token_from_connection"
+        redshift_connector.connect.return_value = mock_connection
+
+        connection = self.adapter.acquire_connection("dummy")
+        connection.handle
+
+        # Check that token was updated after connection
+        from dbt.adapters.redshift.connections import IDP_TOKEN as updated_token
+
+        self.assertEqual(updated_token, "new_token_from_connection")
+
+    def test_sso_method_missing_required_fields(self):
+        """Test SSO method with missing required fields"""
+        self.config.credentials = self.config.credentials.replace(
+            method="sso",
+            scope="https://redshift.amazonaws.com/dbuser",
+            # Missing client_id and idp_tenant
+        )
+        with self.assertRaises(FailedToConnectError) as context:
+            connection = self.adapter.acquire_connection("dummy")
+            connection.handle
+        assert (
+            "'client_id', 'idp_tenant' field(s) are required for 'sso' credentials method"
+            in context.exception.msg
+        )
+
+    def test_sso_method_missing_scope(self):
+        """Test SSO method with missing scope field"""
+        self.config.credentials = self.config.credentials.replace(
+            method="sso",
+            client_id="test-client-id",
+            idp_tenant="test-tenant-id",
+            # Missing scope
+        )
+        with self.assertRaises(FailedToConnectError) as context:
+            connection = self.adapter.acquire_connection("dummy")
+            connection.handle
+        assert (
+            "'scope' field(s) are required for 'sso' credentials method" in context.exception.msg
+        )
+
+    @mock.patch("redshift_connector.connect", MagicMock())
+    def test_sso_method_serverless_host(self):
+        """Test SSO method with serverless host"""
+        import dbt.adapters.redshift.connections
+
+        # Reset global token
+        dbt.adapters.redshift.connections.IDP_TOKEN = None
+
+        self.config.credentials = self.config.credentials.replace(
+            method="sso",
+            scope="https://redshift.amazonaws.com/dbuser",
+            client_id="test-client-id",
+            idp_tenant="test-tenant-id",
+            sso_cache=False,
+            host="test-workgroup.serverless.region.redshift-serverless.amazonaws.com",
+        )
+        connection = self.adapter.acquire_connection("dummy")
+        connection.handle
+        redshift_connector.connect.assert_called_once_with(
+            host="test-workgroup.serverless.region.redshift-serverless.amazonaws.com",
+            port=5439,
+            database="redshift",
+            region=None,
+            auto_create=False,
+            db_groups=[],
+            timeout=None,
+            is_serverless=True,
+            iam=False,
+            db_user="",
+            scope="https://redshift.amazonaws.com/dbuser",
+            client_id="test-client-id",
+            idp_tenant="test-tenant-id",
+            listen_port=7890,
+            credentials_provider="redshift_connector.plugin.BrowserAzureOAuth2CredentialsProvider",
+            user="",
+            password="",
+            idp_response_timeout=50,
+            **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
+        )
+
+    @mock.patch("redshift_connector.connect", MagicMock())
+    def test_sso_method_cache_disabled(self):
+        """Test SSO method with caching disabled"""
+        import dbt.adapters.redshift.connections
+
+        # Reset global token
+        dbt.adapters.redshift.connections.IDP_TOKEN = None
+
+        self.config.credentials = self.config.credentials.replace(
+            method="sso",
+            scope="https://redshift.amazonaws.com/dbuser",
+            client_id="test-client-id",
+            idp_tenant="test-tenant-id",
+            sso_cache=False,
+            host="thishostshouldnotexist.test.us-east-1",
+        )
+        connection = self.adapter.acquire_connection("dummy")
+        connection.handle
+        redshift_connector.connect.assert_called_once_with(
+            host="thishostshouldnotexist.test.us-east-1",
+            port=5439,
+            database="redshift",
+            region=None,
+            auto_create=False,
+            db_groups=[],
+            timeout=None,
+            is_serverless=False,
+            iam=False,
+            db_user="",
+            scope="https://redshift.amazonaws.com/dbuser",
+            client_id="test-client-id",
+            idp_tenant="test-tenant-id",
+            listen_port=7890,
+            credentials_provider="redshift_connector.plugin.BrowserAzureOAuth2CredentialsProvider",
+            user="",
+            password="",
+            idp_response_timeout=50,
+            **DEFAULT_SSL_CONFIG,
+            **DEFAULT_TCP_KEEPALIVE_CONFIG,
+        )
