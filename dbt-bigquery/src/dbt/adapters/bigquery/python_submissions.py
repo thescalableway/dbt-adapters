@@ -1,33 +1,42 @@
+from __future__ import annotations
+
 import inspect
 import json
 import re
-from typing import Any, Dict, Optional, Union
+import time
+from typing import Any, Dict, Optional, TYPE_CHECKING, Union
 import uuid
 
-from dbt.adapters.base import PythonJobHelper
+# These imports are heavy and only needed for BigFrames Python models.
+# They are lazy-loaded inside BigFramesHelper methods to avoid slowing
+# down every `dbt parse` invocation. See: https://github.com/dbt-labs/dbt-adapters/issues/1604
+if TYPE_CHECKING:
+    from google.cloud import aiplatform_v1
+    from google.cloud.aiplatform import gapic as aiplatform_gapic  # noqa: F401
+
+from dbt.adapters.base import PythonJobHelper, PythonSubmissionResult
 from dbt.adapters.bigquery import BigQueryCredentials
 from dbt.adapters.bigquery.clients import (
     create_dataproc_batch_controller_client,
     create_dataproc_job_controller_client,
     create_gcs_client,
+    create_notebook_client,
 )
 from dbt.adapters.bigquery.credentials import (
     BigQueryConnectionMethod,
     create_google_credentials,
     DataprocBatchConfig,
 )
+from google.auth.impersonated_credentials import Credentials as ImpersonatedCredentials
 from dbt.adapters.bigquery.retry import RetryFactory
 from dbt.adapters.events.logging import AdapterLogger
 from dbt_common.exceptions import DbtRuntimeError
-from google.api_core.client_options import ClientOptions
 
+from google.api_core.operation import Operation
 from google.auth.transport.requests import Request
-from google.cloud import aiplatform_v1
-from google.cloud.aiplatform import gapic as aiplatform_gapic
 from google.cloud.dataproc_v1 import CreateBatchRequest, Job, RuntimeConfig
 from google.cloud.dataproc_v1.types.batches import Batch
 from google.protobuf.json_format import ParseDict
-import nbformat
 
 _logger = AdapterLogger("BigQuery")
 
@@ -42,6 +51,9 @@ _DEFAULT_JAR_FILE_URI = "gs://spark-lib/bigquery/spark-bigquery-with-dependencie
 # This differs from other Python models because the typical 5-minute timeout
 # is insufficient for BigFrames processing.
 _DEFAULT_BIGFRAMES_TIMEOUT = 60 * 60
+# Time interval in seconds between successive polling attempts to check the
+# notebook job's status in BigFrames mode.
+_COLAB_POLL_INTERVAL = 30
 
 
 class _BigQueryPythonHelper(PythonJobHelper):
@@ -94,7 +106,7 @@ class ClusterDataprocHelper(_BigQueryPythonHelper):
                 "Need to supply dataproc_cluster_name in profile or config to submit python job with cluster submission method"
             )
 
-    def submit(self, compiled_code: str) -> Job:
+    def submit(self, compiled_code: str) -> PythonSubmissionResult:
         _logger.debug(f"Submitting cluster job to: {self._cluster_name}")
 
         self._write_to_gcs(compiled_code)
@@ -119,7 +131,8 @@ class ClusterDataprocHelper(_BigQueryPythonHelper):
         if response.status.state == 6:
             raise ValueError(response.status.details)
 
-        return response
+        job_id = response.reference.job_id if response.reference else ""
+        return PythonSubmissionResult(run_id=job_id, compiled_code=compiled_code)
 
 
 class ServerlessDataProcHelper(_BigQueryPythonHelper):
@@ -130,24 +143,25 @@ class ServerlessDataProcHelper(_BigQueryPythonHelper):
         self._jar_file_uri = parsed_model["config"].get("jar_file_uri", _DEFAULT_JAR_FILE_URI)
         self._dataproc_batch = credentials.dataproc_batch
 
-    def submit(self, compiled_code: str) -> Batch:
+    def submit(self, compiled_code: str) -> PythonSubmissionResult:
         _logger.debug(f"Submitting batch job with id: {self._get_batch_id()}")
 
         self._write_to_gcs(compiled_code)
 
+        batch_id = self._get_batch_id()
         request = CreateBatchRequest(
             parent=f"projects/{self._project}/locations/{self._region}",
             batch=self._create_batch(),
-            batch_id=self._get_batch_id(),
+            batch_id=batch_id,
         )
 
         # submit the batch
         operation = self._batch_controller_client.create_batch(request)
 
         # wait for the batch to complete
-        response: Batch = operation.result(polling=self._polling_retry)
+        _: Batch = operation.result(polling=self._polling_retry)
 
-        return response
+        return PythonSubmissionResult(run_id=batch_id, compiled_code=compiled_code)
 
     def _create_batch(self) -> Batch:
         # create the Dataproc Serverless job config
@@ -201,12 +215,7 @@ class BigFramesHelper(_BigQueryPythonHelper):
         self._model_name = parsed_model["alias"]
         self._connection_method = credentials.method
         self._GoogleCredentials = create_google_credentials(credentials)
-
-        # TODO(jialuo): Add a function in clients.py for it.
-        self._ai_platform_client = aiplatform_v1.NotebookServiceClient(
-            credentials=self._GoogleCredentials,
-            client_options=ClientOptions(api_endpoint=f"{self._region}-aiplatform.googleapis.com"),
-        )
+        self._notebook_client = create_notebook_client(self._GoogleCredentials, self._region)
         self._notebook_template_id = parsed_model["config"].get("notebook_template_id")
         self._packages = parsed_model["config"].get("packages", [])
         retry = RetryFactory(credentials)
@@ -214,7 +223,21 @@ class BigFramesHelper(_BigQueryPythonHelper):
             model_timeout=parsed_model["config"].get("timeout") or _DEFAULT_BIGFRAMES_TIMEOUT
         )
 
+    def _get_token(self) -> str:
+        """Get a token from the credentials.
+        If a token is not supplied by the user directly it is lazily created the first time we authenticates.
+        BigFrames needs a token to determine the execution user but a call may not have
+        """
+        creds = self._GoogleCredentials
+        if creds.token:
+            return creds.token
+        else:
+            creds.refresh(Request())
+            return creds.token
+
     def _py_to_ipynb(self, compiled_code: str) -> str:
+        import nbformat
+
         notebook = nbformat.v4.new_notebook()
         # Put all codes in one cell.
         notebook.cells.append(nbformat.v4.new_code_cell(compiled_code))
@@ -222,6 +245,8 @@ class BigFramesHelper(_BigQueryPythonHelper):
         return nbformat.writes(notebook, nbformat.NO_CONVERT)
 
     def _get_notebook_template_id(self) -> str:
+        from google.cloud import aiplatform_v1
+
         # If user specifies a runtime template id, use it.
         if self._notebook_template_id:
             return self._notebook_template_id
@@ -231,7 +256,7 @@ class BigFramesHelper(_BigQueryPythonHelper):
             parent=f"projects/{self._project}/locations/{self._region}",
             filter="notebookRuntimeType = ONE_CLICK",
         )
-        page_result = self._ai_platform_client.list_notebook_runtime_templates(request=request)
+        page_result = self._notebook_client.list_notebook_runtime_templates(request=request)
 
         try:
             # Check if a default runtime template is available and applicable.
@@ -250,6 +275,8 @@ class BigFramesHelper(_BigQueryPythonHelper):
             return self._create_notebook_template()
 
     def _create_notebook_template(self) -> str:
+        from google.cloud import aiplatform_v1
+
         # Construct the full network and subnetwork resource names.
         network_full_name = f"projects/{self._project}/global/networks/{_NETWORK_NAME}"
         subnetwork_full_name = (
@@ -280,9 +307,7 @@ class BigFramesHelper(_BigQueryPythonHelper):
             notebook_runtime_template=template,
         )
 
-        operation = self._ai_platform_client.create_notebook_runtime_template(
-            request=create_request
-        )
+        operation = self._notebook_client.create_notebook_runtime_template(request=create_request)
         response = operation.result()
 
         return self._extract_template_id(response.name)
@@ -291,9 +316,37 @@ class BigFramesHelper(_BigQueryPythonHelper):
         match = re.search(r"notebookRuntimeTemplates/(\d+)", template_name)
         return match.group(1) if match else ""
 
+    def _get_service_account_from_credentials(self) -> Optional[str]:
+        """Detect if the OAuth identity is a service account.
+
+        Handles impersonated credentials (via profiles.yml or ADC) and direct
+        service accounts (Cloud Composer, Cloud Run).
+
+        Returns the service account email if detected, or None for regular users.
+        """
+        creds = self._GoogleCredentials
+
+        # Impersonated credentials: from profiles.yml impersonate_service_account
+        # or from ADC with service account impersonation (e.g.,
+        # gcloud auth application-default login --impersonate-service-account).
+        target_principal = getattr(creds, "_target_principal", None)
+        if isinstance(creds, ImpersonatedCredentials) and target_principal:
+            return target_principal
+
+        # Direct service account credentials (e.g., Compute Engine SAs in
+        # Cloud Composer, Cloud Run), or impersonated credentials where
+        # _target_principal is not set but service_account_email is available.
+        service_account_email = getattr(creds, "service_account_email", None)
+        if service_account_email:
+            return service_account_email
+
+        return None
+
     def _config_notebook_job(
         self, notebook_template_id: str
     ) -> aiplatform_v1.NotebookExecutionJob:
+        from google.cloud import aiplatform_v1
+
         notebook_execution_job = aiplatform_v1.NotebookExecutionJob()
         notebook_execution_job.notebook_runtime_template_resource_name = (
             f"projects/{self._project}/locations/{self._region}/"
@@ -304,6 +357,15 @@ class BigFramesHelper(_BigQueryPythonHelper):
             aiplatform_v1.NotebookExecutionJob.GcsNotebookSource(uri=self._gcs_path)
         )
 
+        # Explicit acknowledge the 'out-of-org' warning required by Vertex AI.
+        # This label is needed for cross-project runtime templates to bypass GCP
+        # security policy blocks that would otherwise prevent job creation.
+        # TODO: add a function test for it.
+        security_ack_label = {
+            "aiplatform.googleapis.com/notebook_runtime_out_of_org_warning": "ack"
+        }
+        notebook_execution_job.labels = security_ack_label
+
         if self._connection_method in (
             BigQueryConnectionMethod.SERVICE_ACCOUNT,
             BigQueryConnectionMethod.SERVICE_ACCOUNT_JSON,
@@ -313,13 +375,28 @@ class BigFramesHelper(_BigQueryPythonHelper):
             BigQueryConnectionMethod.OAUTH,
             BigQueryConnectionMethod.OAUTH_SECRETS,
         ):
-            request = Request()
-            response = request(
-                method="GET",
-                url="https://www.googleapis.com/oauth2/v2/userinfo",
-                headers={"Authorization": f"Bearer {self._GoogleCredentials.token}"},
-            )
-            notebook_execution_job.execution_user = json.loads(response.data).get("email")
+            service_account = self._get_service_account_from_credentials()
+            if service_account:
+                notebook_execution_job.service_account = service_account
+            else:
+                # Regular user OAuth: fetch user email from the userinfo endpoint.
+                request = Request()
+                response = request(
+                    method="GET",
+                    url="https://www.googleapis.com/oauth2/v2/userinfo",
+                    headers={"Authorization": f"Bearer {self._get_token()}"},
+                )
+
+                if response.status != 200:
+                    raise DbtRuntimeError(
+                        f"Failed to retrieve user info. Status: {response.status}, Body: {response.data}"
+                    )
+                if user_email := json.loads(response.data).get("email"):
+                    notebook_execution_job.execution_user = user_email
+                else:
+                    raise DbtRuntimeError(
+                        "Authorization request to get user failed to return an email."
+                    )
         else:
             raise ValueError(
                 f"Unsupported credential method in BigFrames: '{self._connection_method}'"
@@ -409,7 +486,7 @@ class BigFramesHelper(_BigQueryPythonHelper):
         except Exception:
             _logger.exception(f"Failed to format the outputs from GCS: {outputs}")
 
-    def submit(self, compiled_code: str) -> None:
+    def submit(self, compiled_code: str) -> PythonSubmissionResult:
         if self._packages:
             install_code = f"_install_packages({self._packages})"
             compiled_code = (
@@ -420,11 +497,50 @@ class BigFramesHelper(_BigQueryPythonHelper):
 
         self._write_to_gcs(notebook_compiled_code)
 
-        self._submit_bigframes_job(notebook_template_id)
+        job = self._submit_bigframes_job(notebook_template_id)
+        job_id = job.name.split("/")[-1] if job.name else ""
+        return PythonSubmissionResult(run_id=job_id, compiled_code=notebook_compiled_code)
+
+    def _track_notebook_job_status(self, job_name: str) -> aiplatform_v1.NotebookExecutionJob:
+        """Tracks the notebook job until it completes or times out."""
+        from google.cloud.aiplatform import gapic as aiplatform_gapic  # noqa: F811
+
+        max_wait_time = self._polling_retry.timeout
+        elapsed = 0
+
+        # Please see all the JobState from
+        # https://cloud.google.com/php/docs/reference/cloud-ai-platform/latest/V1.JobState.
+        terminal_states = {
+            aiplatform_gapic.JobState.JOB_STATE_SUCCEEDED,
+            aiplatform_gapic.JobState.JOB_STATE_PARTIALLY_SUCCEEDED,
+            aiplatform_gapic.JobState.JOB_STATE_FAILED,
+            aiplatform_gapic.JobState.JOB_STATE_CANCELLED,
+            aiplatform_gapic.JobState.JOB_STATE_EXPIRED,
+        }
+
+        while True:
+            retrieved_job = self._notebook_client.get_notebook_execution_job(name=job_name)
+            job_state = retrieved_job.job_state
+
+            if job_state in terminal_states:
+                return retrieved_job
+
+            if elapsed >= max_wait_time:
+                raise TimeoutError(
+                    "Operation did not complete within the designated timeout "
+                    f"of {max_wait_time} seconds. Please cancel the related "
+                    "notebook job manually via the GCP console since it might "
+                    "still be actively running."
+                )
+
+            time.sleep(_COLAB_POLL_INTERVAL)
+            elapsed += _COLAB_POLL_INTERVAL
 
     def _submit_bigframes_job(
         self, notebook_template_id: str
     ) -> aiplatform_v1.NotebookExecutionJob:
+        from google.cloud import aiplatform_v1  # noqa: F811
+        from google.cloud.aiplatform import gapic as aiplatform_gapic  # noqa: F811
 
         notebook_execution_job = self._config_notebook_job(notebook_template_id)
 
@@ -434,33 +550,36 @@ class BigFramesHelper(_BigQueryPythonHelper):
         )
 
         try:
-            res = self._ai_platform_client.create_notebook_execution_job(request=request).result(
-                timeout=self._polling_retry.timeout
+            operation: Operation = self._notebook_client.create_notebook_execution_job(
+                request=request
             )
-            retrieved_job = self._ai_platform_client.get_notebook_execution_job(name=res.name)
+            lro_name = operation.operation.name
+            job_name = lro_name.split("/operations/")[0]
+            retrieved_job = self._track_notebook_job_status(job_name)
         except TimeoutError as timeout_error:
-            raise TimeoutError(
-                f"The dbt operation encountered a timeout: {timeout_error}\n"
-                "Please cancel the related notebook job manually via the GCP "
-                "console since it might still be actively running."
-            )
+            raise TimeoutError(f"The dbt operation encountered a timeout: {timeout_error}")
         except Exception as e:
             raise DbtRuntimeError(f"An unexpected error occured while executing the notebook: {e}")
 
-        job_id = res.name.split("/")[-1]
+        job_id = job_name.split("/")[-1]
         gcs_log_uri = f"{notebook_execution_job.gcs_output_uri}/{job_id}/{self._model_name}.py"
         self._process_gcs_log(gcs_log_uri)
 
-        if retrieved_job.job_state == aiplatform_gapic.JobState.JOB_STATE_FAILED:
+        if retrieved_job.job_state == aiplatform_gapic.JobState.JOB_STATE_SUCCEEDED:
+            _logger.info(
+                f"Colab notebook execution job '{retrieved_job.name}' finished successfully."
+            )
+        elif retrieved_job.job_state == aiplatform_gapic.JobState.JOB_STATE_FAILED:
             raise DbtRuntimeError(
                 f"The colab notebook execution job '{retrieved_job.name}' failed."
             )
-        elif retrieved_job.job_state != aiplatform_gapic.JobState.JOB_STATE_SUCCEEDED:
+        else:
             raise DbtRuntimeError(
-                f"The colab notebook execution job '{retrieved_job.name}' finished with unexpected state: {retrieved_job.job_state.name}"
+                f"The colab notebook execution job '{retrieved_job.name}' "
+                f"finished with unexpected state: {retrieved_job.job_state.name}"
             )
 
-        return self._ai_platform_client.get_notebook_execution_job(name=res.name)
+        return self._notebook_client.get_notebook_execution_job(name=job_name)
 
 
 def _install_packages(packages: list[str]) -> None:

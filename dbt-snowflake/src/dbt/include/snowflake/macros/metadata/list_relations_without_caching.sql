@@ -17,8 +17,6 @@
 
     {%- set paginated_state = namespace(paginated_results=[], watermark=none) -%}
 
-    {%- do run_query('alter session set quoted_identifiers_ignore_case = false;') -%}
-
     {#-
         loop an extra time to catch the breach of max iterations
         Note: while range is 0-based, loop.index starts at 1
@@ -36,17 +34,18 @@
 
         {%- set show_objects_sql = snowflake__show_objects_sql(schema, max_results_per_iter, paginated_state.watermark) -%}
         {%- set paginated_result = run_query(show_objects_sql) -%}
+        {%- set paginated_result = adapter.normalize_show_objects_result(paginated_result) -%}
         {%- do paginated_state.paginated_results.append(paginated_result) -%}
-        {%- set paginated_state.watermark = paginated_result.columns.get('name').values()[-1] -%}
 
         {#- we got less results than the max_results_per_iter (includes 0), meaning we reached the end -#}
         {%- if (paginated_result | length) < max_results_per_iter -%}
             {%- break -%}
         {%- endif -%}
 
-    {%- endfor -%}
+        {#- only update the watermark when there are more pages to fetch -#}
+        {%- set paginated_state.watermark = paginated_result.columns.get('name').values()[-1] -%}
 
-    {%- do run_query('alter session unset quoted_identifiers_ignore_case;') -%}
+    {%- endfor -%}
 
     {#- grab the first table in the paginated results to access the `merge` method -#}
     {%- set agate_table = paginated_state.paginated_results[0] -%}
@@ -65,5 +64,18 @@ show objects in {{ schema }}
 {%- endset -%}
 
 {%- do return(_sql) -%}
+
+{% endmacro %}
+
+
+{% macro snowflake__list_function_relations_without_caching(schema_relation) %}
+
+    {%- if schema_relation is string -%}
+        {%- set schema = schema_relation -%}
+    {%- else -%}
+        {%- set schema = schema_relation.include(identifier=False) -%}
+    {%- endif -%}
+
+    {%- do return(run_query("show functions in " ~ schema)) -%}
 
 {% endmacro %}
