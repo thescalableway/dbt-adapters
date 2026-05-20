@@ -2,6 +2,7 @@ import abc
 import time
 from concurrent.futures import as_completed, Future
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from importlib import import_module
@@ -30,6 +31,9 @@ from dbt.adapters.record.base import (
     AdapterGetPartitionsMetadataRecord,
     AdapterConvertTypeRecord,
     AdapterStandardizeGrantsDictRecord,
+    AdapterListRelationsWithoutCachingRecord,
+    AdapterGetColumnsInRelationRecord,
+    SubmitPythonJobRecord,
 )
 from dbt_common.behavior_flags import Behavior, BehaviorFlag
 from dbt_common.clients.jinja import CallableMacroGenerator
@@ -78,6 +82,7 @@ from dbt.adapters.catalogs import (
     CatalogIntegrationClient,
     CatalogIntegrationConfig,
     CatalogRelation,
+    CATALOG_INTEGRATION_MODEL_CONFIG_NAME,
 )
 from dbt.adapters.contracts.connection import Credentials
 from dbt.adapters.contracts.macros import MacroResolverProtocol
@@ -103,10 +108,11 @@ from dbt.adapters.exceptions import (
     UnexpectedNonTimestampError,
 )
 from dbt.adapters.protocol import AdapterConfig, MacroContextGeneratorCallable
+from dbt.adapters.events.logging import AdapterLogger
 
+logger = AdapterLogger(__name__)
 if TYPE_CHECKING:
     import agate
-
 
 GET_CATALOG_MACRO_NAME = "get_catalog"
 GET_CATALOG_RELATIONS_MACRO_NAME = "get_catalog_relations"
@@ -154,14 +160,24 @@ def _catalog_filter_schemas(
     """Return a function that takes a row and decides if the row should be
     included in the catalog output.
     """
-    schemas = frozenset((d.lower(), s.lower()) for d, s in used_schemas)
+    schemas = frozenset(
+        (d.lower(), s.lower()) for d, s in used_schemas if d is not None and s is not None
+    )
+    if null_schemas := [d for d, s in used_schemas if d is None or s is None]:
+        logger.debug(
+            f"used_schemas contains None for either database or schema, skipping {null_schemas}"
+        )
 
     def test(row: "agate.Row") -> bool:
         table_database = _expect_row_value("table_database", row)
         table_schema = _expect_row_value("table_schema", row)
         # the schema may be present but None, which is not an error and should
         # be filtered out
+
         if table_schema is None:
+            return False
+        if table_database is None:
+            logger.debug(f"table_database is None, skipping {table_schema}")
             return False
         return (table_database.lower(), table_schema.lower()) in schemas
 
@@ -218,6 +234,14 @@ class PythonJobHelper:
 
     def submit(self, compiled_code: str) -> Any:
         raise NotImplementedError("PythonJobHelper submit function is not implemented yet")
+
+
+@dataclass
+class PythonSubmissionResult:
+    """Result from submitting a Python job."""
+
+    run_id: str
+    compiled_code: str
 
 
 class FreshnessResponse(TypedDict):
@@ -323,9 +347,18 @@ class BaseAdapter(metaclass=AdapterMeta):
         return self._catalog_client.get(name)
 
     @available
-    def build_catalog_relation(self, config: RelationConfig) -> CatalogRelation:
-        catalog = self.get_catalog_integration(config.catalog)
-        return catalog.build_relation(config)
+    def build_catalog_relation(self, config: RelationConfig) -> Optional[CatalogRelation]:
+        if not config.config:
+            return None
+
+        # "catalog" is legacy, but we support it for backward compatibility
+        if catalog_name := config.config.get(
+            CATALOG_INTEGRATION_MODEL_CONFIG_NAME
+        ) or config.config.get("catalog"):
+            catalog = self.get_catalog_integration(catalog_name)
+            return catalog.build_relation(config)
+
+        return None
 
     ###
     # Methods to set / access a macro resolver
@@ -723,7 +756,12 @@ class BaseAdapter(metaclass=AdapterMeta):
         """
         raise NotImplementedError("`rename_relation` is not implemented for this adapter!")
 
-    @auto_record_function("AdapterGetColumnsInRelation", group="Available")
+    @record_function(
+        AdapterGetColumnsInRelationRecord,
+        method=True,
+        index_on_thread_id=True,
+        id_field_name="thread_id",
+    )
     @abc.abstractmethod
     @available.parse_list
     def get_columns_in_relation(self, relation: BaseRelation) -> List[BaseColumn]:
@@ -761,6 +799,12 @@ class BaseAdapter(metaclass=AdapterMeta):
             "`expand_target_column_types` is not implemented for this adapter!"
         )
 
+    @record_function(
+        AdapterListRelationsWithoutCachingRecord,
+        method=True,
+        index_on_thread_id=True,
+        id_field_name="thread_id",
+    )
     @abc.abstractmethod
     def list_relations_without_caching(self, schema_relation: BaseRelation) -> List[BaseRelation]:
         """List relations in the given schema, bypassing the cache.
@@ -872,7 +916,7 @@ class BaseAdapter(metaclass=AdapterMeta):
         # aren't always present.
         for column in ("dbt_scd_id", "dbt_valid_from", "dbt_valid_to"):
             desired = column_names[column] if column_names else column
-            if desired not in names:
+            if desired and desired.lower() not in names:
                 missing.append(desired)
 
         if missing:
@@ -1677,6 +1721,9 @@ class BaseAdapter(metaclass=AdapterMeta):
         raise NotImplementedError("default_python_submission_method is not specified")
 
     @log_code_execution
+    @record_function(
+        SubmitPythonJobRecord, method=True, index_on_thread_id=True, id_field_name="thread_id"
+    )
     def submit_python_job(self, parsed_model: dict, compiled_code: str) -> AdapterResponse:
         submission_method = parsed_model["config"].get(
             "submission_method", self.default_python_submission_method
@@ -1992,7 +2039,11 @@ def catch_as_completed(
         # we want to re-raise on ctrl+c and BaseException
         if exc is None:
             catalog = future.result()
-            tables.append(catalog)
+            # Skip empty catalog results to avoid agate type conflicts.
+            # Empty results cause agate to infer text columns (e.g. column_name)
+            # as Number, which conflicts with Text when merged with non-empty tables.
+            if len(catalog) > 0:
+                tables.append(catalog)
         elif isinstance(exc, KeyboardInterrupt) or not isinstance(exc, Exception):
             raise exc
         else:
